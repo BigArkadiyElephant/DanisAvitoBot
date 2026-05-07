@@ -24,22 +24,28 @@ messages_cache: list[dict] = []
 
 async def get_token() -> str | None:
     """Получает access_token через client_credentials."""
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(
-            AVITO_TOKEN_URL,
-            data={"grant_type": "client_credentials"},
-            auth=(CLIENT_ID, CLIENT_SECRET),
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-    if resp.status_code != 200:
-        logger.error("Ошибка получения токена: %s", resp.text)
-        return None
-    data = resp.json()
-    logger.info("Ответ Авито: %s", data)
-    token = data.get("access_token")
-    if token:
-        logger.info("Токен получен успешно")
-    return token
+    logger.info("CLIENT_ID=%s CLIENT_SECRET=%s", CLIENT_ID, "***" if CLIENT_SECRET else None)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                AVITO_TOKEN_URL,
+                data={
+                    "client_id": CLIENT_ID,
+                    "client_secret": CLIENT_SECRET,
+                    "grant_type": "client_credentials",
+                },
+            )
+        logger.info("Статус токена: %s", resp.status_code)
+        logger.info("Ответ Авито: %s", resp.text)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        token = data.get("access_token")
+        if token:
+            logger.info("Токен получен успешно")
+        return token
+    except Exception:
+        logger.exception("Исключение в get_token")
 
 
 async def get_user_id(token: str) -> str | None:
