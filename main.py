@@ -37,8 +37,10 @@ async def get_token() -> str | None:
         logger.error("Ошибка получения токена: %s", resp.text)
         return None
     data = resp.json()
+    logger.info("Ответ Авито: %s", data)
     token = data.get("access_token")
-    logger.info("Токен получен успешно")
+    if token:
+        logger.info("Токен получен успешно")
     return token
 
 
