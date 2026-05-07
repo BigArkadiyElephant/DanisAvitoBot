@@ -106,14 +106,14 @@ async def health():
 
 @app.get("/login")
 async def login():
-    auth_url = (
-        f"{AVITO_AUTH_URL}?"
-        f"client_id={CLIENT_ID}&"
-        f"response_type=code&"
-        f"redirect_uri={REDIRECT_URI}&"
-        f"scope=messenger:read messenger:write user:read"
-    )
-    return RedirectResponse(auth_url)
+    from urllib.parse import urlencode
+    params = urlencode({
+        "client_id": CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": REDIRECT_URI,
+        "scope": "messenger:read messenger:write user:read",
+    })
+    return RedirectResponse(f"{AVITO_AUTH_URL}?{params}")
 
 
 @app.get("/callback")
