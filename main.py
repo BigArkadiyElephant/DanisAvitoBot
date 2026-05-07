@@ -27,11 +27,9 @@ async def get_token() -> str | None:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
             AVITO_TOKEN_URL,
-            data={
-                "client_id": CLIENT_ID,
-                "client_secret": CLIENT_SECRET,
-                "grant_type": "client_credentials",
-            },
+            data={"grant_type": "client_credentials"},
+            auth=(CLIENT_ID, CLIENT_SECRET),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
     if resp.status_code != 200:
         logger.error("Ошибка получения токена: %s", resp.text)
