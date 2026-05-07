@@ -4,60 +4,106 @@ import os
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("avitobot")
 
 CLIENT_ID = os.getenv("AVITO_CLIENT_ID")
 CLIENT_SECRET = os.getenv("AVITO_CLIENT_SECRET")
-REDIRECT_URI = "https://arkadiybiggi-danisavitobot.hf.space/callback"
 
-AVITO_AUTH_URL = "https://www.avito.ru/oauth"
 AVITO_TOKEN_URL = "https://api.avito.ru/token"
 AVITO_API_BASE = "https://api.avito.ru"
 
-POLL_INTERVAL = 10  # секунд между опросами
+POLL_INTERVAL = 10
 
 token_storage: dict = {}
-# Хранит последние сообщения по chat_id для отображения в интерфейсе
 messages_cache: list[dict] = []
 
 
-async def fetch_chats() -> list[dict]:
-    access_token = token_storage.get("access_token")
-    user_id = token_storage.get("user_id")
-    if not access_token or not user_id:
-        return []
+async def get_token() -> str | None:
+    """Получает access_token через client_credentials."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            AVITO_TOKEN_URL,
+            data={
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "grant_type": "client_credentials",
+            },
+        )
+    if resp.status_code != 200:
+        logger.error("Ошибка получения токена: %s", resp.text)
+        return None
+    data = resp.json()
+    token = data.get("access_token")
+    logger.info("Токен получен успешно")
+    return token
 
-    headers = {"Authorization": f"Bearer {access_token}"}
+
+async def get_user_id(token: str) -> str | None:
+    """Получает user_id текущего аккаунта."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            f"{AVITO_API_BASE}/core/v1/accounts/self",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    if resp.status_code != 200:
+        logger.error("Ошибка получения user_id: %s", resp.text)
+        return None
+    return str(resp.json().get("id"))
+
+
+async def fetch_chats(token: str, user_id: str) -> list[dict]:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(
             f"{AVITO_API_BASE}/messenger/v3/accounts/{user_id}/chats",
-            headers=headers,
+            headers={"Authorization": f"Bearer {token}"},
             params={"limit": 20},
         )
-
     if resp.status_code == 401:
-        logger.warning("Токен истёк, нужна повторная авторизация")
+        logger.warning("Токен истёк")
         token_storage.clear()
         return []
-
     if resp.status_code != 200:
         logger.error("Ошибка получения чатов: %s", resp.text)
         return []
-
     return resp.json().get("chats", [])
 
 
 async def poll_avito():
-    """Фоновый polling: каждые POLL_INTERVAL секунд читает новые сообщения."""
+    """Фоновый polling: авторизуется и каждые POLL_INTERVAL секунд читает чаты."""
     logger.info("Polling запущен (интервал %ds)", POLL_INTERVAL)
+
+    # Получаем токен при старте
+    token = await get_token()
+    if not token:
+        logger.error("Не удалось получить токен при старте")
+        return
+
+    user_id = await get_user_id(token)
+    if not user_id:
+        logger.error("Не удалось получить user_id")
+        return
+
+    token_storage["access_token"] = token
+    token_storage["user_id"] = user_id
+    logger.info("Авторизован, user_id=%s", user_id)
+
     while True:
         try:
+            # Обновляем токен если истёк
+            if not token_storage.get("access_token"):
+                token = await get_token()
+                if token:
+                    token_storage["access_token"] = token
+
             if token_storage.get("access_token"):
-                chats = await fetch_chats()
+                chats = await fetch_chats(
+                    token_storage["access_token"],
+                    token_storage["user_id"],
+                )
                 if chats:
                     messages_cache.clear()
                     for chat in chats:
@@ -89,14 +135,11 @@ app = FastAPI(title="Avito Bot", lifespan=lifespan)
 async def home():
     if token_storage.get("access_token"):
         return HTMLResponse(
-            "<h2>✅ Бот авторизован и работает</h2>"
+            "<h2>✅ Бот работает</h2>"
             f"<p>User ID: {token_storage.get('user_id')}</p>"
             "<p><a href='/messages'>📬 Посмотреть сообщения</a></p>"
         )
-    return HTMLResponse(
-        "<h2>Avito Bot</h2>"
-        "<p><a href='/login'>🔑 Авторизоваться через Авито</a></p>"
-    )
+    return HTMLResponse("<h2>⏳ Бот запускается...</h2>")
 
 
 @app.get("/health")
@@ -104,73 +147,19 @@ async def health():
     return {"status": "ok", "authorized": bool(token_storage.get("access_token"))}
 
 
-@app.get("/login")
-async def login():
-    from urllib.parse import urlencode
-    params = urlencode({
-        "client_id": CLIENT_ID,
-        "response_type": "code",
-        "redirect_uri": REDIRECT_URI,
-        "scope": "user:read",
-    })
-    return RedirectResponse(f"{AVITO_AUTH_URL}?{params}")
-
-
-@app.get("/callback")
-async def callback(request: Request, code: str = None, error: str = None):
-    all_params = dict(request.query_params)
-    logger.info("Callback params: %s", all_params)
-    if error:
-        return HTMLResponse(f"<h2>❌ Ошибка: {error}</h2><pre>{all_params}</pre>")
-    if not code:
-        return HTMLResponse(
-            f"<h2>❌ Код авторизации не получен</h2>"
-            f"<pre>Параметры от Авито: {all_params}</pre>"
-            f"<p><a href='/login'>Попробовать снова</a></p>"
-        )
-
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(
-            AVITO_TOKEN_URL,
-            data={
-                "client_id": CLIENT_ID,
-                "client_secret": CLIENT_SECRET,
-                "code": code,
-                "grant_type": "authorization_code",
-                "redirect_uri": REDIRECT_URI,
-            },
-        )
-
-    if resp.status_code != 200:
-        return HTMLResponse(
-            f"<h2>❌ Ошибка получения токена:</h2><pre>{resp.text}</pre>"
-        )
-
-    data = resp.json()
-    token_storage["access_token"] = data.get("access_token")
-    token_storage["user_id"] = data.get("user_id")
-    logger.info("Авторизация успешна, user_id=%s", token_storage["user_id"])
-
-    return HTMLResponse(
-        "<h2>✅ Авторизация успешна! Polling запущен.</h2>"
-        "<p><a href='/messages'>📬 Посмотреть сообщения</a></p>"
-    )
-
-
 @app.get("/messages")
 async def get_messages():
     if not token_storage.get("access_token"):
-        return HTMLResponse(
-            "<h2>❌ Не авторизован. <a href='/login'>Войти</a></h2>"
-        )
+        return HTMLResponse("<h2>⏳ Бот ещё не авторизован</h2>")
 
     if not messages_cache:
         return HTMLResponse(
-            "<h2>📭 Нет сообщений (или polling ещё не получил данные)</h2>"
+            "<h2>📭 Нет сообщений</h2>"
             "<p><a href='/messages'>🔄 Обновить</a></p>"
         )
 
-    html = "<h2>📬 Последние сообщения</h2><table border='1' cellpadding='8'>"
+    html = "<h2>📬 Последние сообщения</h2>"
+    html += "<table border='1' cellpadding='8'>"
     html += "<tr><th>Chat ID</th><th>Автор ID</th><th>Сообщение</th><th>Время</th></tr>"
     for m in messages_cache:
         html += (
