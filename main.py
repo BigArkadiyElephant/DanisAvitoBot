@@ -111,7 +111,7 @@ async def login():
         "client_id": CLIENT_ID,
         "response_type": "code",
         "redirect_uri": REDIRECT_URI,
-        "scope": "messenger:read messenger:write user:read",
+        "scope": "user:read",
     })
     return RedirectResponse(f"{AVITO_AUTH_URL}?{params}")
 
