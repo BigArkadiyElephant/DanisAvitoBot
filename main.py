@@ -4,7 +4,7 @@ import os
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
@@ -117,11 +117,17 @@ async def login():
 
 
 @app.get("/callback")
-async def callback(code: str = None, error: str = None):
+async def callback(request: Request, code: str = None, error: str = None):
+    all_params = dict(request.query_params)
+    logger.info("Callback params: %s", all_params)
     if error:
-        return HTMLResponse(f"<h2>❌ Ошибка авторизации: {error}</h2>")
+        return HTMLResponse(f"<h2>❌ Ошибка: {error}</h2><pre>{all_params}</pre>")
     if not code:
-        return HTMLResponse("<h2>❌ Код авторизации не получен</h2>")
+        return HTMLResponse(
+            f"<h2>❌ Код авторизации не получен</h2>"
+            f"<pre>Параметры от Авито: {all_params}</pre>"
+            f"<p><a href='/login'>Попробовать снова</a></p>"
+        )
 
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
