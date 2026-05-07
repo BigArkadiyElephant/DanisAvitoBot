@@ -64,7 +64,7 @@ async def get_user_id(token: str) -> str | None:
 async def fetch_chats(token: str, user_id: str) -> list[dict]:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(
-            f"{AVITO_API_BASE}/messenger/v3/accounts/{user_id}/chats",
+            f"{AVITO_API_BASE}/messenger/v2/accounts/{user_id}/chats/",
             headers={"Authorization": f"Bearer {token}"},
             params={"limit": 20},
         )
