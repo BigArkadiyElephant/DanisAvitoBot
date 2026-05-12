@@ -31,9 +31,65 @@ DEFAULT_PROMPT = (
 )
 
 PROMPT_FILE = "prompt.json"
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+
+
+def _supabase_headers() -> dict:
+    return {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def _load_prompt_from_supabase() -> str | None:
+    if not (SUPABASE_URL and SUPABASE_KEY):
+        return None
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/bot_settings",
+            params={"key": "eq.system_prompt", "select": "value"},
+            headers=_supabase_headers(),
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            rows = resp.json()
+            if rows:
+                logger.info("Промпт загружен из Supabase (%d символов)", len(rows[0]["value"]))
+                return rows[0]["value"]
+            logger.info("В Supabase ещё нет сохранённого промпта")
+            return None
+        logger.error("Supabase load %s: %s", resp.status_code, resp.text)
+    except Exception:
+        logger.exception("Ошибка загрузки промпта из Supabase")
+    return None
+
+
+def _save_prompt_to_supabase(prompt: str) -> bool:
+    if not (SUPABASE_URL and SUPABASE_KEY):
+        return False
+    try:
+        resp = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/bot_settings",
+            headers={**_supabase_headers(), "Prefer": "resolution=merge-duplicates"},
+            json={"key": "system_prompt", "value": prompt},
+            timeout=10,
+        )
+        if resp.status_code in (200, 201, 204):
+            logger.info("Промпт сохранён в Supabase")
+            return True
+        logger.error("Supabase save %s: %s", resp.status_code, resp.text)
+    except Exception:
+        logger.exception("Ошибка сохранения промпта в Supabase")
+    return False
 
 
 def _load_prompt() -> str:
+    """Приоритет: Supabase → локальный файл → SYSTEM_PROMPT env → DEFAULT_PROMPT."""
+    from_db = _load_prompt_from_supabase()
+    if from_db:
+        return from_db
     try:
         with open(PROMPT_FILE, "r", encoding="utf-8") as f:
             return json.load(f).get("prompt", os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT))
@@ -45,11 +101,13 @@ def _load_prompt() -> str:
 
 
 def _save_prompt(prompt: str) -> None:
+    """Сохраняем в Supabase + дублируем в файл (для отладки и fallback)."""
+    _save_prompt_to_supabase(prompt)
     try:
         with open(PROMPT_FILE, "w", encoding="utf-8") as f:
             json.dump({"prompt": prompt}, f, ensure_ascii=False, indent=2)
     except Exception:
-        logger.exception("Не удалось сохранить промпт")
+        logger.exception("Не удалось сохранить промпт в файл")
 
 
 # Состояние в памяти (можно менять через /admin)
@@ -354,11 +412,13 @@ app = FastAPI(title="Avito Bot", lifespan=lifespan)
 async def home():
     if token_storage.get("access_token"):
         auto = "ВКЛ" if is_auto_reply_enabled() else "ВЫКЛ (просмотр)"
+        storage = "Supabase ✅" if (SUPABASE_URL and SUPABASE_KEY) else "локальный файл ⚠️"
         return HTMLResponse(
             "<h2>✅ Бот работает</h2>"
             f"<p>User ID: {token_storage.get('user_id')}</p>"
             f"<p>Auto-reply: <b>{auto}</b></p>"
             f"<p>Модель: {GEMINI_MODEL}</p>"
+            f"<p>Хранилище промпта: <b>{storage}</b></p>"
             "<ul>"
             "<li><a href='/admin'>⚙️ Админ-панель (промпт + тест)</a></li>"
             "<li><a href='/replies'>🤖 Сгенерированные ответы</a></li>"
