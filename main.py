@@ -28,7 +28,7 @@ AVITO_TOKEN_URL = "https://api.avito.ru/token"
 AVITO_API_BASE = "https://api.avito.ru"
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
+    "gemini-1.5-flash:generateContent"
 )
 
 POLL_INTERVAL = 10
@@ -133,6 +133,14 @@ async def generate_reply(buyer_message: str, item_title: str = "") -> str | None
         return None
 
 
+def _is_system_message(text: str, author_id: str) -> bool:
+    if author_id in ("1", "0"):
+        return True
+    if text.startswith("[Системное сообщение]"):
+        return True
+    return False
+
+
 async def process_chat(token: str, user_id: str, chat: dict) -> None:
     """Проверяет последнее сообщение в чате и при необходимости отвечает."""
     chat_id = chat.get("id")
@@ -141,17 +149,25 @@ async def process_chat(token: str, user_id: str, chat: dict) -> None:
     author_id = str(last_message.get("author_id", ""))
     text = last_message.get("content", {}).get("text", "")
 
-    # Сообщение от нас — пропускаем
-    if author_id == user_id:
-        replied_messages[chat_id] = msg_id
+    if not msg_id:
         return
 
-    # Уже отвечали на это сообщение
+    # Уже обрабатывали это сообщение — пропускаем (даже если генерация падала)
     if replied_messages.get(chat_id) == msg_id:
         return
 
-    # Пропускаем системные сообщения и без текста
-    if not text or not msg_id:
+    # Помечаем как обработанное сразу — чтобы не было ретрая на каждый poll
+    replied_messages[chat_id] = msg_id
+
+    # Сообщение от нас — пропускаем
+    if author_id == user_id:
+        return
+
+    # Системные сообщения от Авито — пропускаем
+    if _is_system_message(text, author_id):
+        return
+
+    if not text:
         return
 
     logger.info("Новое сообщение в %s: %s", chat_id, text[:80])
@@ -162,17 +178,15 @@ async def process_chat(token: str, user_id: str, chat: dict) -> None:
 
     reply = await generate_reply(text, item_title)
     if not reply:
-        logger.warning("Не удалось сгенерировать ответ для чата %s", chat_id)
+        logger.warning("Не удалось сгенерировать ответ для %s", chat_id)
         return
 
     logger.info("Ответ Gemini для %s: %s", chat_id, reply[:80])
 
     if ENABLE_AUTO_REPLY:
-        if await send_message(token, user_id, chat_id, reply):
-            replied_messages[chat_id] = msg_id
+        await send_message(token, user_id, chat_id, reply)
     else:
         logger.info("Auto-reply выключен, ответ не отправлен")
-        replied_messages[chat_id] = msg_id
 
 
 async def poll_avito():
