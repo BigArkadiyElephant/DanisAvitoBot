@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -29,9 +30,31 @@ DEFAULT_PROMPT = (
     "и предложи обсудить детали."
 )
 
+PROMPT_FILE = "prompt.json"
+
+
+def _load_prompt() -> str:
+    try:
+        with open(PROMPT_FILE, "r", encoding="utf-8") as f:
+            return json.load(f).get("prompt", os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT))
+    except FileNotFoundError:
+        return os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT)
+    except Exception:
+        logger.exception("Ошибка чтения файла промпта")
+        return os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT)
+
+
+def _save_prompt(prompt: str) -> None:
+    try:
+        with open(PROMPT_FILE, "w", encoding="utf-8") as f:
+            json.dump({"prompt": prompt}, f, ensure_ascii=False, indent=2)
+    except Exception:
+        logger.exception("Не удалось сохранить промпт")
+
+
 # Состояние в памяти (можно менять через /admin)
 runtime_state = {
-    "system_prompt": os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT),
+    "system_prompt": _load_prompt(),
     "enable_auto_reply": os.getenv("ENABLE_AUTO_REPLY", "true").lower() == "true",
 }
 
@@ -442,7 +465,8 @@ async def admin_page():
 @app.post("/admin/prompt")
 async def admin_save_prompt(prompt: str = Form(...)):
     runtime_state["system_prompt"] = prompt.strip()
-    logger.info("Промпт обновлён (%d символов)", len(prompt))
+    _save_prompt(prompt.strip())
+    logger.info("Промпт обновлён (%d символов) и сохранён в файл", len(prompt))
     return RedirectResponse("/admin", status_code=303)
 
 
