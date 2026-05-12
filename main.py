@@ -16,10 +16,18 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
-    "Ты — вежливый и опытный продавец-консультант на Авито. "
-    "Отвечай покупателям коротко (2-3 предложения), по делу, дружелюбно. "
-    "Цель — заинтересовать покупателя и довести до сделки. "
-    "Не выдумывай характеристики товара — если не знаешь, скажи что уточнишь.",
+    "Ты — менеджер по продажам услуг разработки. Мы делаем под ключ: "
+    "чат-боты с ИИ, нейросетевые решения для бизнеса, сайты. "
+    "Пишешь от первого лица потенциальным клиентам на Авито. "
+    "ПРАВИЛА:\n"
+    "1. Отвечай коротко (1-3 предложения), без воды.\n"
+    "2. Внимательно читай ИСТОРИЮ диалога — не задавай повторно вопросы, "
+    "на которые уже получил ответ.\n"
+    "3. Если клиент сказал 'не интересно' / 'нет' — поблагодари и не дави.\n"
+    "4. Если клиент задаёт уточняющий вопрос — отвечай конкретно.\n"
+    "5. Цель: понять задачу клиента и договориться о созвоне или ТЗ.\n"
+    "6. Не выдумывай цены и сроки — если спросят, скажи что зависит от ТЗ "
+    "и предложи обсудить детали.",
 )
 
 ENABLE_AUTO_REPLY = os.getenv("ENABLE_AUTO_REPLY", "true").lower() == "true"
@@ -90,6 +98,22 @@ async def fetch_chats(token: str, user_id: str) -> list[dict]:
     return resp.json().get("chats", [])
 
 
+async def fetch_chat_messages(token: str, user_id: str, chat_id: str, limit: int = 30) -> list[dict]:
+    """Получает историю сообщений конкретного чата."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            f"{AVITO_API_BASE}/messenger/v3/accounts/{user_id}/chats/{chat_id}/messages/",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"limit": limit},
+        )
+    if resp.status_code != 200:
+        logger.error("Ошибка истории чата %s: %s %s", chat_id, resp.status_code, resp.text)
+        return []
+    data = resp.json()
+    # API может возвращать как {messages: [...]} так и список
+    return data.get("messages", data) if isinstance(data, dict) else data
+
+
 async def send_message(token: str, user_id: str, chat_id: str, text: str) -> bool:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
@@ -107,24 +131,55 @@ async def send_message(token: str, user_id: str, chat_id: str, text: str) -> boo
     return True
 
 
-async def generate_reply(buyer_message: str, item_title: str = "") -> str | None:
-    """Генерирует ответ через Gemini."""
+def _build_gemini_contents(history: list[dict], our_user_id: str) -> list[dict]:
+    """Преобразует историю Авито в формат Gemini contents (multi-turn)."""
+    contents = []
+    # История из Авито приходит в обратном порядке (новые сверху) — переворачиваем
+    for msg in reversed(history):
+        text = msg.get("content", {}).get("text", "")
+        if not text:
+            continue
+        author_id = str(msg.get("author_id", ""))
+        if author_id in ("1", "0") or text.startswith("[Системное сообщение]"):
+            continue
+        role = "model" if author_id == our_user_id else "user"
+        # Gemini не любит подряд идущие сообщения одной роли — склеиваем
+        if contents and contents[-1]["role"] == role:
+            contents[-1]["parts"][0]["text"] += "\n" + text
+        else:
+            contents.append({"role": role, "parts": [{"text": text}]})
+    return contents
+
+
+async def generate_reply(
+    history: list[dict],
+    our_user_id: str,
+    item_title: str = "",
+) -> str | None:
+    """Генерирует ответ через Gemini с учётом истории диалога."""
     if not GEMINI_API_KEY:
         logger.error("GEMINI_API_KEY не задан")
         return None
 
-    context = f"\n\nТовар: {item_title}" if item_title else ""
-    prompt = (
-        f"{SYSTEM_PROMPT}{context}\n\n"
-        f"Сообщение покупателя: {buyer_message}\n\n"
-        f"Твой ответ:"
-    )
+    contents = _build_gemini_contents(history, our_user_id)
+    if not contents or contents[-1]["role"] != "user":
+        logger.info("Нет нового сообщения от клиента для ответа")
+        return None
+
+    system_text = SYSTEM_PROMPT
+    if item_title:
+        system_text += f"\n\nКонтекст: клиент пишет по объявлению «{item_title}»."
+
+    payload = {
+        "contents": contents,
+        "systemInstruction": {"parts": [{"text": system_text}]},
+    }
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{GEMINI_URL}?key={GEMINI_API_KEY}",
-                json={"contents": [{"parts": [{"text": prompt}]}]},
+                json=payload,
             )
         if resp.status_code != 200:
             logger.error("Ошибка Gemini: %s %s", resp.status_code, resp.text)
@@ -179,7 +234,13 @@ async def process_chat(token: str, user_id: str, chat: dict) -> None:
     context = chat.get("context", {}).get("value", {})
     item_title = context.get("title", "") if isinstance(context, dict) else ""
 
-    reply = await generate_reply(text, item_title)
+    # Тянем историю чата чтобы Gemini понимал контекст
+    history = await fetch_chat_messages(token, user_id, chat_id)
+    if not history:
+        logger.warning("Пустая история для чата %s", chat_id)
+        return
+
+    reply = await generate_reply(history, user_id, item_title)
     if not reply:
         logger.warning("Не удалось сгенерировать ответ для %s", chat_id)
         return
@@ -191,6 +252,7 @@ async def process_chat(token: str, user_id: str, chat: dict) -> None:
         "buyer_text": text,
         "reply": reply,
         "item_title": item_title,
+        "history_len": len(history),
         "sent": False,
     }
 
