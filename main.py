@@ -12,19 +12,34 @@ logger = logging.getLogger("avitobot")
 
 CLIENT_ID = os.getenv("AVITO_CLIENT_ID")
 CLIENT_SECRET = os.getenv("AVITO_CLIENT_SECRET")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+SYSTEM_PROMPT = os.getenv(
+    "SYSTEM_PROMPT",
+    "Ты — вежливый и опытный продавец-консультант на Авито. "
+    "Отвечай покупателям коротко (2-3 предложения), по делу, дружелюбно. "
+    "Цель — заинтересовать покупателя и довести до сделки. "
+    "Не выдумывай характеристики товара — если не знаешь, скажи что уточнишь.",
+)
+
+ENABLE_AUTO_REPLY = os.getenv("ENABLE_AUTO_REPLY", "true").lower() == "true"
 
 AVITO_TOKEN_URL = "https://api.avito.ru/token"
 AVITO_API_BASE = "https://api.avito.ru"
+GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.0-flash:generateContent"
+)
 
 POLL_INTERVAL = 10
 
 token_storage: dict = {}
 messages_cache: list[dict] = []
+# Хранит id последнего обработанного сообщения по каждому чату
+replied_messages: dict[str, str] = {}
 
 
 async def get_token() -> str | None:
-    """Получает access_token через client_credentials."""
-    logger.info("CLIENT_ID=%s CLIENT_SECRET=%s", CLIENT_ID, "***" if CLIENT_SECRET else None)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
@@ -35,28 +50,23 @@ async def get_token() -> str | None:
                     "grant_type": "client_credentials",
                 },
             )
-        logger.info("Статус токена: %s", resp.status_code)
-        logger.info("Ответ Авито: %s", resp.text)
         if resp.status_code != 200:
+            logger.error("Ошибка токена %s: %s", resp.status_code, resp.text)
             return None
-        data = resp.json()
-        token = data.get("access_token")
-        if token:
-            logger.info("Токен получен успешно")
-        return token
+        return resp.json().get("access_token")
     except Exception:
         logger.exception("Исключение в get_token")
+        return None
 
 
 async def get_user_id(token: str) -> str | None:
-    """Получает user_id текущего аккаунта."""
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(
             f"{AVITO_API_BASE}/core/v1/accounts/self",
             headers={"Authorization": f"Bearer {token}"},
         )
     if resp.status_code != 200:
-        logger.error("Ошибка получения user_id: %s", resp.text)
+        logger.error("Ошибка user_id: %s", resp.text)
         return None
     return str(resp.json().get("id"))
 
@@ -69,28 +79,110 @@ async def fetch_chats(token: str, user_id: str) -> list[dict]:
             params={"limit": 20},
         )
     if resp.status_code == 401:
-        logger.warning("Токен истёк")
         token_storage.clear()
         return []
     if resp.status_code != 200:
-        logger.error("Ошибка получения чатов: %s", resp.text)
+        logger.error("Ошибка чатов: %s", resp.text)
         return []
     return resp.json().get("chats", [])
 
 
-async def poll_avito():
-    """Фоновый polling: авторизуется и каждые POLL_INTERVAL секунд читает чаты."""
-    logger.info("Polling запущен (интервал %ds)", POLL_INTERVAL)
+async def send_message(token: str, user_id: str, chat_id: str, text: str) -> bool:
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            f"{AVITO_API_BASE}/messenger/v1/accounts/{user_id}/chats/{chat_id}/messages",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"message": {"text": text}, "type": "text"},
+        )
+    if resp.status_code not in (200, 201):
+        logger.error("Ошибка отправки в чат %s: %s %s", chat_id, resp.status_code, resp.text)
+        return False
+    logger.info("Сообщение отправлено в чат %s", chat_id)
+    return True
 
-    # Получаем токен при старте
-    token = await get_token()
-    if not token:
-        logger.error("Не удалось получить токен при старте")
+
+async def generate_reply(buyer_message: str, item_title: str = "") -> str | None:
+    """Генерирует ответ через Gemini."""
+    if not GEMINI_API_KEY:
+        logger.error("GEMINI_API_KEY не задан")
+        return None
+
+    context = f"\n\nТовар: {item_title}" if item_title else ""
+    prompt = (
+        f"{SYSTEM_PROMPT}{context}\n\n"
+        f"Сообщение покупателя: {buyer_message}\n\n"
+        f"Твой ответ:"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+            )
+        if resp.status_code != 200:
+            logger.error("Ошибка Gemini: %s %s", resp.status_code, resp.text)
+            return None
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception:
+        logger.exception("Ошибка генерации ответа")
+        return None
+
+
+async def process_chat(token: str, user_id: str, chat: dict) -> None:
+    """Проверяет последнее сообщение в чате и при необходимости отвечает."""
+    chat_id = chat.get("id")
+    last_message = chat.get("last_message", {})
+    msg_id = last_message.get("id")
+    author_id = str(last_message.get("author_id", ""))
+    text = last_message.get("content", {}).get("text", "")
+
+    # Сообщение от нас — пропускаем
+    if author_id == user_id:
+        replied_messages[chat_id] = msg_id
         return
 
+    # Уже отвечали на это сообщение
+    if replied_messages.get(chat_id) == msg_id:
+        return
+
+    # Пропускаем системные сообщения и без текста
+    if not text or not msg_id:
+        return
+
+    logger.info("Новое сообщение в %s: %s", chat_id, text[:80])
+
+    # Заголовок объявления для контекста
+    context = chat.get("context", {}).get("value", {})
+    item_title = context.get("title", "") if isinstance(context, dict) else ""
+
+    reply = await generate_reply(text, item_title)
+    if not reply:
+        logger.warning("Не удалось сгенерировать ответ для чата %s", chat_id)
+        return
+
+    logger.info("Ответ Gemini для %s: %s", chat_id, reply[:80])
+
+    if ENABLE_AUTO_REPLY:
+        if await send_message(token, user_id, chat_id, reply):
+            replied_messages[chat_id] = msg_id
+    else:
+        logger.info("Auto-reply выключен, ответ не отправлен")
+        replied_messages[chat_id] = msg_id
+
+
+async def poll_avito():
+    logger.info("Polling запущен (интервал %ds, auto_reply=%s)", POLL_INTERVAL, ENABLE_AUTO_REPLY)
+
+    token = await get_token()
+    if not token:
+        return
     user_id = await get_user_id(token)
     if not user_id:
-        logger.error("Не удалось получить user_id")
         return
 
     token_storage["access_token"] = token
@@ -99,17 +191,15 @@ async def poll_avito():
 
     while True:
         try:
-            # Обновляем токен если истёк
             if not token_storage.get("access_token"):
-                token = await get_token()
-                if token:
-                    token_storage["access_token"] = token
+                new_token = await get_token()
+                if new_token:
+                    token_storage["access_token"] = new_token
 
-            if token_storage.get("access_token"):
-                chats = await fetch_chats(
-                    token_storage["access_token"],
-                    token_storage["user_id"],
-                )
+            current_token = token_storage.get("access_token")
+            current_user_id = token_storage.get("user_id")
+            if current_token and current_user_id:
+                chats = await fetch_chats(current_token, current_user_id)
                 if chats:
                     messages_cache.clear()
                     for chat in chats:
@@ -120,7 +210,8 @@ async def poll_avito():
                             "text": last.get("content", {}).get("text", "—"),
                             "created": last.get("created", ""),
                         })
-                    logger.info("Получено %d чатов", len(chats))
+                        await process_chat(current_token, current_user_id, chat)
+                    logger.info("Обработано %d чатов", len(chats))
         except Exception:
             logger.exception("Ошибка в poll_avito")
 
@@ -143,7 +234,9 @@ async def home():
         return HTMLResponse(
             "<h2>✅ Бот работает</h2>"
             f"<p>User ID: {token_storage.get('user_id')}</p>"
-            "<p><a href='/messages'>📬 Посмотреть сообщения</a></p>"
+            f"<p>Auto-reply: {'ВКЛ' if ENABLE_AUTO_REPLY else 'ВЫКЛ'}</p>"
+            f"<p>AI: Gemini</p>"
+            "<p><a href='/messages'>📬 Сообщения</a></p>"
         )
     return HTMLResponse("<h2>⏳ Бот запускается...</h2>")
 
@@ -157,24 +250,16 @@ async def health():
 async def get_messages():
     if not token_storage.get("access_token"):
         return HTMLResponse("<h2>⏳ Бот ещё не авторизован</h2>")
-
     if not messages_cache:
-        return HTMLResponse(
-            "<h2>📭 Нет сообщений</h2>"
-            "<p><a href='/messages'>🔄 Обновить</a></p>"
-        )
+        return HTMLResponse("<h2>📭 Нет сообщений</h2>")
 
     html = "<h2>📬 Последние сообщения</h2>"
     html += "<table border='1' cellpadding='8'>"
     html += "<tr><th>Chat ID</th><th>Автор ID</th><th>Сообщение</th><th>Время</th></tr>"
     for m in messages_cache:
         html += (
-            f"<tr>"
-            f"<td>{m['chat_id']}</td>"
-            f"<td>{m['author']}</td>"
-            f"<td>{m['text']}</td>"
-            f"<td>{m['created']}</td>"
-            f"</tr>"
+            f"<tr><td>{m['chat_id']}</td><td>{m['author']}</td>"
+            f"<td>{m['text']}</td><td>{m['created']}</td></tr>"
         )
     html += "</table><p><a href='/messages'>🔄 Обновить</a></p>"
     return HTMLResponse(html)
