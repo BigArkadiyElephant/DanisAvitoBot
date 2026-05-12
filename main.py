@@ -37,6 +37,8 @@ token_storage: dict = {}
 messages_cache: list[dict] = []
 # Хранит id последнего обработанного сообщения по каждому чату
 replied_messages: dict[str, str] = {}
+# Хранит последний сгенерированный ответ Gemini по каждому чату
+generated_replies: dict[str, dict] = {}
 
 
 async def get_token() -> str | None:
@@ -183,8 +185,17 @@ async def process_chat(token: str, user_id: str, chat: dict) -> None:
 
     logger.info("Ответ Gemini для %s: %s", chat_id, reply[:80])
 
+    # Сохраняем сгенерированный ответ для отображения на /replies
+    generated_replies[chat_id] = {
+        "buyer_text": text,
+        "reply": reply,
+        "item_title": item_title,
+        "sent": False,
+    }
+
     if ENABLE_AUTO_REPLY:
-        await send_message(token, user_id, chat_id, reply)
+        if await send_message(token, user_id, chat_id, reply):
+            generated_replies[chat_id]["sent"] = True
     else:
         logger.info("Auto-reply выключен, ответ не отправлен")
 
@@ -248,9 +259,12 @@ async def home():
         return HTMLResponse(
             "<h2>✅ Бот работает</h2>"
             f"<p>User ID: {token_storage.get('user_id')}</p>"
-            f"<p>Auto-reply: {'ВКЛ' if ENABLE_AUTO_REPLY else 'ВЫКЛ'}</p>"
-            f"<p>AI: Gemini</p>"
-            "<p><a href='/messages'>📬 Сообщения</a></p>"
+            f"<p>Auto-reply: {'ВКЛ' if ENABLE_AUTO_REPLY else 'ВЫКЛ (просмотр)'}</p>"
+            f"<p>AI: Gemini 1.5 Flash</p>"
+            "<ul>"
+            "<li><a href='/messages'>📬 Входящие сообщения</a></li>"
+            "<li><a href='/replies'>🤖 Сгенерированные ответы</a></li>"
+            "</ul>"
         )
     return HTMLResponse("<h2>⏳ Бот запускается...</h2>")
 
@@ -258,6 +272,40 @@ async def home():
 @app.get("/health")
 async def health():
     return {"status": "ok", "authorized": bool(token_storage.get("access_token"))}
+
+
+@app.get("/replies")
+async def get_replies():
+    if not token_storage.get("access_token"):
+        return HTMLResponse("<h2>⏳ Бот ещё не авторизован</h2>")
+    if not generated_replies:
+        return HTMLResponse(
+            "<h2>🤖 Сгенерированные ответы</h2>"
+            "<p>Пока ничего не сгенерировано. Жди новых сообщений от покупателей.</p>"
+            "<p><a href='/replies'>🔄 Обновить</a></p>"
+        )
+
+    mode = "ВКЛ — отправлено в Авито" if ENABLE_AUTO_REPLY else "ВЫКЛ — только просмотр"
+    html = f"<h2>🤖 Сгенерированные ответы Gemini</h2><p>Auto-reply: <b>{mode}</b></p>"
+    html += "<table border='1' cellpadding='8' style='border-collapse:collapse'>"
+    html += (
+        "<tr style='background:#eee'>"
+        "<th>Chat ID</th><th>Объявление</th><th>Покупатель написал</th>"
+        "<th>Ответ бота</th><th>Отправлено?</th></tr>"
+    )
+    for chat_id, data in generated_replies.items():
+        sent_mark = "✅" if data.get("sent") else "—"
+        html += (
+            f"<tr>"
+            f"<td>{chat_id}</td>"
+            f"<td>{data.get('item_title', '')}</td>"
+            f"<td>{data.get('buyer_text', '')}</td>"
+            f"<td style='background:#f0fff0'>{data.get('reply', '')}</td>"
+            f"<td style='text-align:center'>{sent_mark}</td>"
+            f"</tr>"
+        )
+    html += "</table><p><a href='/replies'>🔄 Обновить</a> | <a href='/'>🏠 Главная</a></p>"
+    return HTMLResponse(html)
 
 
 @app.get("/messages")
