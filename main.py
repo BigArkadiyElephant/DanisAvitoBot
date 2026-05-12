@@ -4,8 +4,8 @@ import os
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("avitobot")
@@ -14,11 +14,10 @@ CLIENT_ID = os.getenv("AVITO_CLIENT_ID")
 CLIENT_SECRET = os.getenv("AVITO_CLIENT_SECRET")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-SYSTEM_PROMPT = os.getenv(
-    "SYSTEM_PROMPT",
+DEFAULT_PROMPT = (
     "Ты — менеджер по продажам услуг разработки. Мы делаем под ключ: "
     "чат-боты с ИИ, нейросетевые решения для бизнеса, сайты. "
-    "Пишешь от первого лица потенциальным клиентам на Авито. "
+    "Пишешь от первого лица потенциальным клиентам на Авито.\n\n"
     "ПРАВИЛА:\n"
     "1. Отвечай коротко (1-3 предложения), без воды.\n"
     "2. Внимательно читай ИСТОРИЮ диалога — не задавай повторно вопросы, "
@@ -27,10 +26,22 @@ SYSTEM_PROMPT = os.getenv(
     "4. Если клиент задаёт уточняющий вопрос — отвечай конкретно.\n"
     "5. Цель: понять задачу клиента и договориться о созвоне или ТЗ.\n"
     "6. Не выдумывай цены и сроки — если спросят, скажи что зависит от ТЗ "
-    "и предложи обсудить детали.",
+    "и предложи обсудить детали."
 )
 
-ENABLE_AUTO_REPLY = os.getenv("ENABLE_AUTO_REPLY", "true").lower() == "true"
+# Состояние в памяти (можно менять через /admin)
+runtime_state = {
+    "system_prompt": os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT),
+    "enable_auto_reply": os.getenv("ENABLE_AUTO_REPLY", "true").lower() == "true",
+}
+
+
+def get_prompt() -> str:
+    return runtime_state["system_prompt"]
+
+
+def is_auto_reply_enabled() -> bool:
+    return runtime_state["enable_auto_reply"]
 
 AVITO_TOKEN_URL = "https://api.avito.ru/token"
 AVITO_API_BASE = "https://api.avito.ru"
@@ -166,7 +177,7 @@ async def generate_reply(
         logger.info("Нет нового сообщения от клиента для ответа")
         return None
 
-    system_text = SYSTEM_PROMPT
+    system_text = get_prompt()
     if item_title:
         system_text += f"\n\nКонтекст: клиент пишет по объявлению «{item_title}»."
 
@@ -256,7 +267,7 @@ async def process_chat(token: str, user_id: str, chat: dict) -> None:
         "sent": False,
     }
 
-    if ENABLE_AUTO_REPLY:
+    if is_auto_reply_enabled():
         if await send_message(token, user_id, chat_id, reply):
             generated_replies[chat_id]["sent"] = True
     else:
@@ -264,7 +275,7 @@ async def process_chat(token: str, user_id: str, chat: dict) -> None:
 
 
 async def poll_avito():
-    logger.info("Polling запущен (интервал %ds, auto_reply=%s)", POLL_INTERVAL, ENABLE_AUTO_REPLY)
+    logger.info("Polling запущен (интервал %ds, auto_reply=%s)", POLL_INTERVAL, is_auto_reply_enabled())
 
     token = await get_token()
     if not token:
@@ -319,14 +330,16 @@ app = FastAPI(title="Avito Bot", lifespan=lifespan)
 @app.get("/")
 async def home():
     if token_storage.get("access_token"):
+        auto = "ВКЛ" if is_auto_reply_enabled() else "ВЫКЛ (просмотр)"
         return HTMLResponse(
             "<h2>✅ Бот работает</h2>"
             f"<p>User ID: {token_storage.get('user_id')}</p>"
-            f"<p>Auto-reply: {'ВКЛ' if ENABLE_AUTO_REPLY else 'ВЫКЛ (просмотр)'}</p>"
-            f"<p>AI: Gemini 1.5 Flash</p>"
+            f"<p>Auto-reply: <b>{auto}</b></p>"
+            f"<p>Модель: {GEMINI_MODEL}</p>"
             "<ul>"
-            "<li><a href='/messages'>📬 Входящие сообщения</a></li>"
+            "<li><a href='/admin'>⚙️ Админ-панель (промпт + тест)</a></li>"
             "<li><a href='/replies'>🤖 Сгенерированные ответы</a></li>"
+            "<li><a href='/messages'>📬 Входящие сообщения</a></li>"
             "</ul>"
         )
     return HTMLResponse("<h2>⏳ Бот запускается...</h2>")
@@ -356,6 +369,99 @@ async def list_models():
     return {"current_model": GEMINI_MODEL, "available_models": models}
 
 
+ADMIN_PAGE = """
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Admin</title>
+<style>
+body{font-family:system-ui,Arial;max-width:900px;margin:20px auto;padding:0 16px}
+h2{margin-top:24px}
+textarea{width:100%;box-sizing:border-box;font-family:monospace;font-size:14px;padding:8px}
+input[type=text]{width:100%;box-sizing:border-box;padding:8px;font-size:14px}
+button{padding:10px 18px;font-size:14px;cursor:pointer;background:#2563eb;color:white;border:0;border-radius:6px}
+button:hover{background:#1d4ed8}
+.row{margin:12px 0}
+.box{background:#f5f5f5;padding:12px;border-radius:8px;margin:8px 0;white-space:pre-wrap}
+.reply{background:#e6ffe6}
+nav a{margin-right:12px}
+label{display:block;margin-bottom:6px;font-weight:600}
+</style></head>
+<body>
+<nav><a href="/">🏠 Главная</a> <a href="/replies">🤖 Ответы</a> <a href="/messages">📬 Сообщения</a></nav>
+
+<h2>⚙️ Системный промпт</h2>
+<form method="post" action="/admin/prompt">
+<div class="row"><label>Промпт (как бот должен себя вести)</label>
+<textarea name="prompt" rows="14">__PROMPT__</textarea></div>
+<button type="submit">💾 Сохранить</button>
+</form>
+
+<h2>🔘 Авто-ответы в Авито</h2>
+<form method="post" action="/admin/toggle">
+<p>Сейчас: <b>__AUTO__</b></p>
+<button type="submit">Переключить</button>
+</form>
+
+<h2>🧪 Тестовый чат</h2>
+<p>Напиши сообщение от лица клиента — бот сгенерирует ответ как в Авито.</p>
+<form method="post" action="/admin/test">
+<div class="row"><label>Сообщение клиента</label>
+<input type="text" name="message" value="__TEST_MSG__" placeholder="Здравствуйте, сколько стоит чат-бот?"></div>
+<button type="submit">🚀 Сгенерировать ответ</button>
+</form>
+__TEST_RESULT__
+
+</body></html>
+"""
+
+# Память тестового чата для удобства
+last_test = {"message": "", "reply": ""}
+
+
+def render_admin() -> str:
+    test_html = ""
+    if last_test["reply"]:
+        test_html = (
+            f"<h3>Результат теста</h3>"
+            f"<div class='box'>👤 {last_test['message']}</div>"
+            f"<div class='box reply'>🤖 {last_test['reply']}</div>"
+        )
+    return (
+        ADMIN_PAGE
+        .replace("__PROMPT__", get_prompt())
+        .replace("__AUTO__", "ВКЛ" if is_auto_reply_enabled() else "ВЫКЛ")
+        .replace("__TEST_MSG__", last_test["message"])
+        .replace("__TEST_RESULT__", test_html)
+    )
+
+
+@app.get("/admin")
+async def admin_page():
+    return HTMLResponse(render_admin())
+
+
+@app.post("/admin/prompt")
+async def admin_save_prompt(prompt: str = Form(...)):
+    runtime_state["system_prompt"] = prompt.strip()
+    logger.info("Промпт обновлён (%d символов)", len(prompt))
+    return RedirectResponse("/admin", status_code=303)
+
+
+@app.post("/admin/toggle")
+async def admin_toggle():
+    runtime_state["enable_auto_reply"] = not runtime_state["enable_auto_reply"]
+    logger.info("Auto-reply -> %s", runtime_state["enable_auto_reply"])
+    return RedirectResponse("/admin", status_code=303)
+
+
+@app.post("/admin/test")
+async def admin_test(message: str = Form(...)):
+    fake_history = [{"author_id": "test_user", "content": {"text": message}}]
+    reply = await generate_reply(fake_history, "self", item_title="Услуги разработки")
+    last_test["message"] = message
+    last_test["reply"] = reply or "(не удалось сгенерировать)"
+    return RedirectResponse("/admin", status_code=303)
+
+
 @app.get("/replies")
 async def get_replies():
     if not token_storage.get("access_token"):
@@ -367,7 +473,7 @@ async def get_replies():
             "<p><a href='/replies'>🔄 Обновить</a></p>"
         )
 
-    mode = "ВКЛ — отправлено в Авито" if ENABLE_AUTO_REPLY else "ВЫКЛ — только просмотр"
+    mode = "ВКЛ — отправлено в Авито" if is_auto_reply_enabled() else "ВЫКЛ — только просмотр"
     html = f"<h2>🤖 Сгенерированные ответы Gemini</h2><p>Auto-reply: <b>{mode}</b></p>"
     html += "<table border='1' cellpadding='8' style='border-collapse:collapse'>"
     html += (
