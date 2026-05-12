@@ -26,9 +26,10 @@ ENABLE_AUTO_REPLY = os.getenv("ENABLE_AUTO_REPLY", "true").lower() == "true"
 
 AVITO_TOKEN_URL = "https://api.avito.ru/token"
 AVITO_API_BASE = "https://api.avito.ru"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-1.5-flash:generateContent"
+    f"https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{GEMINI_MODEL}:generateContent"
 )
 
 POLL_INTERVAL = 10
@@ -272,6 +273,25 @@ async def home():
 @app.get("/health")
 async def health():
     return {"status": "ok", "authorized": bool(token_storage.get("access_token"))}
+
+
+@app.get("/models")
+async def list_models():
+    """Список доступных Gemini моделей для текущего ключа."""
+    if not GEMINI_API_KEY:
+        return {"error": "GEMINI_API_KEY не задан"}
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
+        )
+    if resp.status_code != 200:
+        return {"error": resp.text}
+    data = resp.json()
+    models = []
+    for m in data.get("models", []):
+        if "generateContent" in m.get("supportedGenerationMethods", []):
+            models.append(m.get("name", "").replace("models/", ""))
+    return {"current_model": GEMINI_MODEL, "available_models": models}
 
 
 @app.get("/replies")
