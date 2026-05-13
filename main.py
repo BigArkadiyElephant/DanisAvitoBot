@@ -162,9 +162,9 @@ def is_auto_reply_enabled() -> bool:
 
 AVITO_TOKEN_URL = "https://api.avito.ru/token"
 AVITO_API_BASE = "https://api.avito.ru"
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 POLL_INTERVAL = 10
 
@@ -281,9 +281,9 @@ async def generate_reply(
     our_user_id: str,
     item_title: str = "",
 ) -> str | None:
-    """Генерирует ответ через DeepSeek с учётом истории диалога."""
-    if not DEEPSEEK_API_KEY:
-        logger.error("DEEPSEEK_API_KEY не задан")
+    """Генерирует ответ через Claude с учётом истории диалога."""
+    if not ANTHROPIC_API_KEY:
+        logger.error("ANTHROPIC_API_KEY не задан")
         return None
 
     system_text = get_prompt()
@@ -291,33 +291,35 @@ async def generate_reply(
         system_text += f"\n\nКонтекст: клиент пишет по объявлению «{item_title}»."
 
     messages = _build_messages(history, our_user_id, system_text)
-    non_system = [m for m in messages if m["role"] != "system"]
-    if not non_system or non_system[-1]["role"] != "user":
+    # Для Anthropic системный промпт идёт отдельно, убираем его из messages
+    chat_messages = [m for m in messages if m["role"] != "system"]
+    if not chat_messages or chat_messages[-1]["role"] != "user":
         logger.info("Нет нового сообщения от клиента для ответа")
         return None
 
     payload = {
-        "model": DEEPSEEK_MODEL,
-        "messages": messages,
-        "temperature": 0.7,
+        "model": ANTHROPIC_MODEL,
         "max_tokens": 500,
+        "system": system_text,
+        "messages": chat_messages,
     }
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
-                DEEPSEEK_URL,
+                ANTHROPIC_URL,
                 headers={
-                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                    "Content-Type": "application/json",
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
                 },
                 json=payload,
             )
         if resp.status_code != 200:
-            logger.error("Ошибка DeepSeek: %s %s", resp.status_code, resp.text)
+            logger.error("Ошибка Claude: %s %s", resp.status_code, resp.text)
             return None
         data = resp.json()
-        return data["choices"][0]["message"]["content"].strip()
+        return data["content"][0]["text"].strip()
     except Exception:
         logger.exception("Ошибка генерации ответа")
         return None
@@ -471,7 +473,7 @@ async def home():
             "<h2>✅ Бот работает</h2>"
             f"<p>User ID: {token_storage.get('user_id')}</p>"
             f"<p>Auto-reply: <b>{auto}</b></p>"
-            f"<p>Модель: {DEEPSEEK_MODEL}</p>"
+            f"<p>Модель: {ANTHROPIC_MODEL}</p>"
             f"<p>Хранилище промпта: <b>{storage}</b></p>"
             "<ul>"
             "<li><a href='/admin'>⚙️ Админ-панель (промпт + тест)</a></li>"
@@ -490,9 +492,9 @@ async def health():
 @app.get("/models")
 async def list_models():
     return {
-        "current_model": DEEPSEEK_MODEL,
-        "available_models": ["deepseek-chat", "deepseek-reasoner"],
-        "api_key_set": bool(DEEPSEEK_API_KEY),
+        "current_model": ANTHROPIC_MODEL,
+        "available_models": ["claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-7"],
+        "api_key_set": bool(ANTHROPIC_API_KEY),
     }
 
 
@@ -826,7 +828,7 @@ async def admin_test(message: str = Form(...)):
     except Exception as e:
         reply = f"❌ Исключение: {e}"
     if reply is None:
-        reply = "⚠️ Gemini вернул None. Проверь GEMINI_API_KEY в HF Secrets и логи Space (кнопка Logs)."
+        reply = "⚠️ ИИ не ответил. Проверь ANTHROPIC_API_KEY в HF Secrets и логи Space (кнопка Logs)."
     test_chat_history.append({"role": "bot", "text": reply})
     return RedirectResponse("/admin", status_code=303)
 
