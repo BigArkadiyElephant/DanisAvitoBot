@@ -625,9 +625,10 @@ def _render_chat_messages() -> str:
 
 
 def _test_history_to_avito_format() -> list[dict]:
+    # Возвращаем newest-first — так ожидает _build_gemini_contents (он делает reversed внутри)
     return [
         {"author_id": "self" if m["role"] == "bot" else "test_user", "content": {"text": m["text"]}}
-        for m in test_chat_history
+        for m in reversed(test_chat_history)
     ]
 
 
@@ -677,8 +678,13 @@ async def admin_toggle():
 async def admin_test(message: str = Form(...)):
     test_chat_history.append({"role": "user", "text": message.strip()})
     history = _test_history_to_avito_format()
-    reply = await generate_reply(history, "self", item_title="Услуги разработки")
-    test_chat_history.append({"role": "bot", "text": reply or "(не удалось сгенерировать)"})
+    try:
+        reply = await generate_reply(history, "self", item_title="Услуги разработки")
+    except Exception as e:
+        reply = f"❌ Исключение: {e}"
+    if reply is None:
+        reply = "⚠️ Gemini вернул None. Проверь GEMINI_API_KEY в HF Secrets и логи Space (кнопка Logs)."
+    test_chat_history.append({"role": "bot", "text": reply})
     return RedirectResponse("/admin", status_code=303)
 
 
