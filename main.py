@@ -114,6 +114,39 @@ def _save_prompt(prompt: str) -> None:
         logger.exception("Не удалось сохранить промпт в файл")
 
 
+def _load_disabled_chats() -> set[str]:
+    if not (SUPABASE_URL and SUPABASE_KEY):
+        return set()
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/bot_settings",
+            params={"key": "eq.disabled_chats", "select": "value"},
+            headers=_supabase_headers(),
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            rows = resp.json()
+            if rows:
+                return set(json.loads(rows[0]["value"]))
+    except Exception:
+        logger.exception("Ошибка загрузки disabled_chats из Supabase")
+    return set()
+
+
+def _save_disabled_chats() -> None:
+    if not (SUPABASE_URL and SUPABASE_KEY):
+        return
+    try:
+        httpx.post(
+            f"{SUPABASE_URL}/rest/v1/bot_settings",
+            headers={**_supabase_headers(), "Prefer": "resolution=merge-duplicates"},
+            json={"key": "disabled_chats", "value": json.dumps(list(disabled_chats))},
+            timeout=10,
+        )
+    except Exception:
+        logger.exception("Ошибка сохранения disabled_chats в Supabase")
+
+
 # Состояние в памяти (можно менять через /admin)
 runtime_state = {
     "system_prompt": _load_prompt(),
@@ -140,10 +173,9 @@ POLL_INTERVAL = 10
 
 token_storage: dict = {}
 messages_cache: list[dict] = []
-# Хранит id последнего обработанного сообщения по каждому чату
 replied_messages: dict[str, str] = {}
-# Хранит последний сгенерированный ответ Gemini по каждому чату
 generated_replies: dict[str, dict] = {}
+disabled_chats: set[str] = _load_disabled_chats()
 
 
 async def get_token() -> str | None:
@@ -298,6 +330,10 @@ def _is_system_message(text: str, author_id: str) -> bool:
 async def process_chat(token: str, user_id: str, chat: dict) -> None:
     """Проверяет последнее сообщение в чате и при необходимости отвечает."""
     chat_id = chat.get("id")
+
+    if chat_id in disabled_chats:
+        return
+
     last_message = chat.get("last_message", {})
     msg_id = last_message.get("id")
     author_id = str(last_message.get("author_id", ""))
@@ -538,7 +574,12 @@ footer a:hover{color:#00D9FF}
     <div class="logo">A</div>
     <div>Avito<span class="accent">Bot</span> <span style="color:#8A8DA8;font-weight:500;font-size:14px;font-family:'Inter'">&nbsp;/ prompt console</span></div>
   </div>
-  <div class="online"><span class="dot-live"></span>online &middot; auto-reply: __STATUS__</div>
+  <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+    <div class="online"><span class="dot-live"></span>online &middot; auto-reply: __STATUS__</div>
+    <a href="/admin/chats" style="color:#00D9FF;text-decoration:none;font-size:13px;border:1px solid rgba(0,217,255,.3);padding:5px 12px;border-radius:8px;background:rgba(0,217,255,.07)">⚙️ Управление чатами</a>
+    <a href="/replies" style="color:#8A8DA8;text-decoration:none;font-size:13px">💬 Ответы</a>
+    <a href="/messages" style="color:#8A8DA8;text-decoration:none;font-size:13px">📬 Сообщения</a>
+  </div>
 </div>
 
 <div class="stats">
@@ -654,6 +695,87 @@ def render_admin() -> str:
     )
 
 
+CHATS_PAGE_HEADER = """<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AvitoBot · Чаты</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:#1E1F2E;color:#E4E6F1;font-family:'Inter',sans-serif;min-height:100vh;padding:24px 20px}
+h1,h2,.brand{font-family:'Space Grotesk',sans-serif}
+.wrap{max-width:900px;margin:0 auto}
+.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;flex-wrap:wrap;gap:12px}
+.brand{display:flex;align-items:center;gap:12px;font-size:20px;font-weight:700}
+.logo{width:38px;height:38px;border-radius:12px;background:linear-gradient(135deg,#00D9FF,#0096B3);display:grid;place-items:center;color:#0B0C16;font-weight:700;font-size:18px;box-shadow:0 0 18px rgba(0,217,255,.45)}
+.accent{color:#00D9FF}
+nav a{color:#8A8DA8;text-decoration:none;font-size:13px;margin-left:16px;transition:color .2s}
+nav a:hover{color:#00D9FF}
+.page-title{font-size:17px;font-weight:700;margin-bottom:18px;color:#E4E6F1}
+.chat-card{background:#2A2B3D;border:1px solid #34354A;border-radius:14px;padding:16px 20px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:16px;transition:border-color .2s}
+.chat-card:hover{border-color:#555}
+.chat-card.disabled{opacity:.55;border-color:#2A2B3D}
+.chat-info{flex:1;min-width:0}
+.chat-id{font-family:'Space Grotesk';font-size:13px;color:#8A8DA8;margin-bottom:4px;word-break:break-all}
+.chat-msg{font-size:14px;color:#E4E6F1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat-label{font-size:11px;margin-bottom:4px;text-transform:uppercase;letter-spacing:1px;font-weight:600}
+.label-on{color:#27ae60}
+.label-off{color:#e74c3c}
+.btn-on{padding:8px 18px;border-radius:9px;font-family:'Inter';font-size:13px;font-weight:600;cursor:pointer;border:1px solid rgba(0,217,255,.4);background:rgba(0,217,255,.1);color:#00D9FF;transition:all .2s;white-space:nowrap}
+.btn-on:hover{background:rgba(0,217,255,.2)}
+.btn-off{padding:8px 18px;border-radius:9px;font-family:'Inter';font-size:13px;font-weight:600;cursor:pointer;border:1px solid rgba(231,76,60,.4);background:rgba(231,76,60,.1);color:#e74c3c;transition:all .2s;white-space:nowrap}
+.btn-off:hover{background:#e74c3c;color:#fff}
+.empty{text-align:center;color:#8A8DA8;padding:60px 0;font-size:15px}
+.refresh{display:inline-block;margin-bottom:20px;color:#00D9FF;text-decoration:none;font-size:13px;border:1px solid rgba(0,217,255,.3);padding:6px 14px;border-radius:8px;background:rgba(0,217,255,.07);transition:all .2s}
+.refresh:hover{background:rgba(0,217,255,.15)}
+</style></head><body><div class="wrap">
+<div class="topbar">
+  <div class="brand"><div class="logo">A</div><div>Avito<span class="accent">Bot</span></div></div>
+  <nav>
+    <a href="/admin">⚙️ Панель</a>
+    <a href="/replies">💬 Ответы</a>
+    <a href="/messages">📬 Сообщения</a>
+  </nav>
+</div>
+"""
+
+CHATS_PAGE_FOOTER = """
+</div></body></html>"""
+
+
+def render_chats() -> str:
+    html = CHATS_PAGE_HEADER
+    html += "<a class='refresh' href='/admin/chats'>🔄 Обновить список</a>"
+    html += f"<div class='page-title'>⚙️ Управление чатами <span style='color:#8A8DA8;font-size:14px;font-weight:400'>({len(messages_cache)} чатов)</span></div>"
+    if not messages_cache:
+        html += "<div class='empty'>Чаты ещё не загружены. Подожди несколько секунд и обнови страницу.</div>"
+    else:
+        for m in messages_cache:
+            cid = m["chat_id"]
+            is_disabled = cid in disabled_chats
+            card_cls = "chat-card disabled" if is_disabled else "chat-card"
+            label_cls = "label-off" if is_disabled else "label-on"
+            label_txt = "БОТ ВЫКЛЮЧЕН" if is_disabled else "БОТ АКТИВЕН"
+            btn_cls = "btn-on" if is_disabled else "btn-off"
+            btn_txt = "Включить бота" if is_disabled else "Выключить бота"
+            msg_preview = html_module.escape(str(m.get("text", ""))[:80])
+            html += (
+                f"<div class='{card_cls}'>"
+                f"<div class='chat-info'>"
+                f"<div class='chat-label {label_cls}'>{label_txt}</div>"
+                f"<div class='chat-id'>{html_module.escape(cid)}</div>"
+                f"<div class='chat-msg'>{msg_preview}</div>"
+                f"</div>"
+                f"<form method='post' action='/admin/chats/toggle'>"
+                f"<input type='hidden' name='chat_id' value='{html_module.escape(cid)}'>"
+                f"<button type='submit' class='{btn_cls}'>{btn_txt}</button>"
+                f"</form>"
+                f"</div>"
+            )
+    html += CHATS_PAGE_FOOTER
+    return html
+
+
 @app.get("/admin")
 async def admin_page():
     return HTMLResponse(render_admin())
@@ -672,6 +794,23 @@ async def admin_toggle():
     runtime_state["enable_auto_reply"] = not runtime_state["enable_auto_reply"]
     logger.info("Auto-reply -> %s", runtime_state["enable_auto_reply"])
     return RedirectResponse("/admin", status_code=303)
+
+
+@app.get("/admin/chats")
+async def admin_chats_page():
+    return HTMLResponse(render_chats())
+
+
+@app.post("/admin/chats/toggle")
+async def admin_chats_toggle(chat_id: str = Form(...)):
+    if chat_id in disabled_chats:
+        disabled_chats.discard(chat_id)
+        logger.info("Бот включён для чата %s", chat_id)
+    else:
+        disabled_chats.add(chat_id)
+        logger.info("Бот выключен для чата %s", chat_id)
+    _save_disabled_chats()
+    return RedirectResponse("/admin/chats", status_code=303)
 
 
 @app.post("/admin/test")
