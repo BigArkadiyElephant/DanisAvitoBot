@@ -14,7 +14,6 @@ logger = logging.getLogger("avitobot")
 
 CLIENT_ID = os.getenv("AVITO_CLIENT_ID")
 CLIENT_SECRET = os.getenv("AVITO_CLIENT_SECRET")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 DEFAULT_PROMPT = (
     "Ты — менеджер по продажам услуг разработки. Мы делаем под ключ: "
@@ -163,11 +162,9 @@ def is_auto_reply_enabled() -> bool:
 
 AVITO_TOKEN_URL = "https://api.avito.ru/token"
 AVITO_API_BASE = "https://api.avito.ru"
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-GEMINI_URL = (
-    f"https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent"
-)
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 
 POLL_INTERVAL = 10
 
@@ -259,10 +256,10 @@ async def send_message(token: str, user_id: str, chat_id: str, text: str) -> boo
     return True
 
 
-def _build_gemini_contents(history: list[dict], our_user_id: str) -> list[dict]:
-    """Преобразует историю Авито в формат Gemini contents (multi-turn)."""
-    contents = []
-    # История из Авито приходит в обратном порядке (новые сверху) — переворачиваем
+def _build_messages(history: list[dict], our_user_id: str, system_text: str) -> list[dict]:
+    """Преобразует историю Авито в OpenAI-формат messages (DeepSeek-совместимый)."""
+    messages = [{"role": "system", "content": system_text}]
+    # История из Авито приходит newest-first — переворачиваем в хронологический порядок
     for msg in reversed(history):
         text = msg.get("content", {}).get("text", "")
         if not text:
@@ -270,13 +267,13 @@ def _build_gemini_contents(history: list[dict], our_user_id: str) -> list[dict]:
         author_id = str(msg.get("author_id", ""))
         if author_id in ("1", "0") or text.startswith("[Системное сообщение]"):
             continue
-        role = "model" if author_id == our_user_id else "user"
-        # Gemini не любит подряд идущие сообщения одной роли — склеиваем
-        if contents and contents[-1]["role"] == role:
-            contents[-1]["parts"][0]["text"] += "\n" + text
+        role = "assistant" if author_id == our_user_id else "user"
+        # Склеиваем подряд идущие сообщения одной роли
+        if len(messages) > 1 and messages[-1]["role"] == role:
+            messages[-1]["content"] += "\n" + text
         else:
-            contents.append({"role": role, "parts": [{"text": text}]})
-    return contents
+            messages.append({"role": role, "content": text})
+    return messages
 
 
 async def generate_reply(
@@ -284,36 +281,43 @@ async def generate_reply(
     our_user_id: str,
     item_title: str = "",
 ) -> str | None:
-    """Генерирует ответ через Gemini с учётом истории диалога."""
-    if not GEMINI_API_KEY:
-        logger.error("GEMINI_API_KEY не задан")
-        return None
-
-    contents = _build_gemini_contents(history, our_user_id)
-    if not contents or contents[-1]["role"] != "user":
-        logger.info("Нет нового сообщения от клиента для ответа")
+    """Генерирует ответ через DeepSeek с учётом истории диалога."""
+    if not DEEPSEEK_API_KEY:
+        logger.error("DEEPSEEK_API_KEY не задан")
         return None
 
     system_text = get_prompt()
     if item_title:
         system_text += f"\n\nКонтекст: клиент пишет по объявлению «{item_title}»."
 
+    messages = _build_messages(history, our_user_id, system_text)
+    non_system = [m for m in messages if m["role"] != "system"]
+    if not non_system or non_system[-1]["role"] != "user":
+        logger.info("Нет нового сообщения от клиента для ответа")
+        return None
+
     payload = {
-        "contents": contents,
-        "systemInstruction": {"parts": [{"text": system_text}]},
+        "model": DEEPSEEK_MODEL,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 500,
     }
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
-                f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+                DEEPSEEK_URL,
+                headers={
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json",
+                },
                 json=payload,
             )
         if resp.status_code != 200:
-            logger.error("Ошибка Gemini: %s %s", resp.status_code, resp.text)
+            logger.error("Ошибка DeepSeek: %s %s", resp.status_code, resp.text)
             return None
         data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return data["choices"][0]["message"]["content"].strip()
     except Exception:
         logger.exception("Ошибка генерации ответа")
         return None
@@ -467,7 +471,7 @@ async def home():
             "<h2>✅ Бот работает</h2>"
             f"<p>User ID: {token_storage.get('user_id')}</p>"
             f"<p>Auto-reply: <b>{auto}</b></p>"
-            f"<p>Модель: {GEMINI_MODEL}</p>"
+            f"<p>Модель: {DEEPSEEK_MODEL}</p>"
             f"<p>Хранилище промпта: <b>{storage}</b></p>"
             "<ul>"
             "<li><a href='/admin'>⚙️ Админ-панель (промпт + тест)</a></li>"
@@ -485,21 +489,11 @@ async def health():
 
 @app.get("/models")
 async def list_models():
-    """Список доступных Gemini моделей для текущего ключа."""
-    if not GEMINI_API_KEY:
-        return {"error": "GEMINI_API_KEY не задан"}
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(
-            f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
-        )
-    if resp.status_code != 200:
-        return {"error": resp.text}
-    data = resp.json()
-    models = []
-    for m in data.get("models", []):
-        if "generateContent" in m.get("supportedGenerationMethods", []):
-            models.append(m.get("name", "").replace("models/", ""))
-    return {"current_model": GEMINI_MODEL, "available_models": models}
+    return {
+        "current_model": DEEPSEEK_MODEL,
+        "available_models": ["deepseek-chat", "deepseek-reasoner"],
+        "api_key_set": bool(DEEPSEEK_API_KEY),
+    }
 
 
 ADMIN_PAGE = """<!doctype html>
