@@ -1,4 +1,5 @@
 import asyncio
+import html as html_module
 import json
 import logging
 import os
@@ -460,101 +461,141 @@ ADMIN_PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Панель управления ботом</title>
+<title>AvitoBot · Console</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,-apple-system,Arial,sans-serif;background:#f0f2f5;min-height:100vh;display:flex;flex-direction:column}
-header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);color:white;padding:20px 32px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
-header h1{font-size:20px;font-weight:700;letter-spacing:.3px}
-header p{font-size:13px;opacity:.65;margin-top:3px}
-nav a{color:rgba(255,255,255,.8);text-decoration:none;margin-left:16px;font-size:14px}
-nav a:hover{color:white}
-main{max-width:860px;width:100%;margin:28px auto;padding:0 20px;flex:1}
-.card{background:white;border-radius:16px;padding:26px;margin-bottom:22px;box-shadow:0 2px 12px rgba(0,0,0,.07)}
-.card h2{font-size:17px;color:#1a1a2e;margin-bottom:16px;display:flex;align-items:center;gap:8px}
-label{display:block;font-size:13px;color:#666;margin-bottom:8px;font-weight:500}
-textarea{width:100%;font-family:'Courier New',monospace;font-size:13px;padding:14px;border:1.5px solid #e0e0e0;border-radius:10px;resize:vertical;line-height:1.6;color:#333;transition:border-color .2s}
-textarea:focus{outline:none;border-color:#0f3460}
-input[type=text]{width:100%;padding:11px 16px;font-size:14px;border:1.5px solid #e0e0e0;border-radius:10px;color:#333;transition:border-color .2s}
-input[type=text]:focus{outline:none;border-color:#0f3460}
-.btn{padding:11px 22px;font-size:14px;font-weight:600;cursor:pointer;border:0;border-radius:10px;transition:all .2s}
-.btn-primary{background:#0f3460;color:white}
-.btn-primary:hover{background:#16213e;transform:translateY(-1px)}
-.btn-toggle{background:#e8f4fd;color:#0f3460;border:1.5px solid #0f3460}
-.btn-toggle:hover{background:#0f3460;color:white}
-.btn-send{background:#0f3460;color:white;white-space:nowrap}
-.btn-send:hover{background:#16213e}
-.btn-clear{background:#fff0f0;color:#c0392b;border:1.5px solid #e74c3c;font-size:13px;padding:8px 16px;cursor:pointer;border-radius:8px;font-weight:500;transition:all .2s}
-.btn-clear:hover{background:#e74c3c;color:white}
-.row{margin-top:14px}
-.badge{display:inline-block;padding:4px 14px;border-radius:20px;font-size:13px;font-weight:600}
-.badge-on{background:#e6f9f0;color:#27ae60}
-.badge-off{background:#fef9e7;color:#e67e22}
-.chat-box{margin:14px 0;max-height:380px;overflow-y:auto;background:#f8f9fb;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px}
-.chat-empty{color:#aaa;font-size:14px;text-align:center;padding:20px}
-.msg{display:flex;gap:10px;align-items:flex-start}
-.msg-user{flex-direction:row-reverse}
-.bubble{padding:10px 14px;border-radius:14px;max-width:78%;font-size:14px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word}
-.msg-user .bubble{background:#0f3460;color:white;border-radius:14px 4px 14px 14px}
-.msg-bot .bubble{background:white;border:1px solid #e0e0e0;color:#333;border-radius:4px 14px 14px 14px}
-.avatar{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;background:#e8edf5}
-.input-row{display:flex;gap:10px;margin-top:12px}
-.input-row input{flex:1}
-.chat-footer{display:flex;justify-content:flex-end;margin-top:8px}
-footer{background:#1a1a2e;color:rgba(255,255,255,.75);text-align:center;padding:20px 32px;margin-top:auto}
-footer .fname{font-weight:700;font-size:16px;color:white;margin-bottom:8px}
-footer .contacts{font-size:14px;display:flex;gap:24px;justify-content:center;flex-wrap:wrap}
-footer a{color:rgba(255,255,255,.7);text-decoration:none}
-footer a:hover{color:white}
+body{background:#1E1F2E;color:#E4E6F1;font-family:'Inter',sans-serif;min-height:100vh;padding:24px 20px;display:flex;flex-direction:column}
+h1,h2,.brand{font-family:'Space Grotesk',sans-serif}
+.wrap{max-width:1200px;margin:0 auto;flex:1;display:flex;flex-direction:column;gap:0}
+.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px}
+.brand{display:flex;align-items:center;gap:12px;font-size:20px;font-weight:700;letter-spacing:.5px}
+.logo{width:38px;height:38px;border-radius:12px;background:linear-gradient(135deg,#00D9FF,#0096B3);display:grid;place-items:center;color:#0B0C16;font-weight:700;font-size:18px;box-shadow:0 0 18px rgba(0,217,255,.45)}
+.accent{color:#00D9FF}
+.online{display:flex;align-items:center;gap:8px;font-size:13px;color:#8A8DA8;font-family:'Inter';font-weight:500}
+.dot-live{width:8px;height:8px;border-radius:50%;background:#00D9FF;box-shadow:0 0 10px #00D9FF;flex-shrink:0}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:22px}
+.stat-card{background:#2A2B3D;border:1px solid #34354A;border-radius:16px;padding:18px 22px;display:flex;justify-content:space-between;align-items:center}
+.stat-label{font-size:11px;color:#8A8DA8;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px;font-weight:600}
+.stat-val{font-family:'Space Grotesk';font-size:26px;font-weight:700;color:#fff}
+.stat-val.cyan{color:#00D9FF;text-shadow:0 0 14px rgba(0,217,255,.6)}
+.pill{background:rgba(0,217,255,.12);color:#00D9FF;border:1px solid rgba(0,217,255,.35);padding:4px 10px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
+.pill.off{background:rgba(255,160,0,.1);color:#FFA500;border-color:rgba(255,160,0,.35)}
+.grid{display:grid;grid-template-columns:1fr 1.05fr;gap:20px;flex:1}
+.card{background:#2A2B3D;border:1px solid #34354A;border-radius:16px;padding:22px}
+.card-title{display:flex;align-items:center;gap:10px;margin-bottom:18px}
+.card-dot{width:8px;height:8px;border-radius:50%;background:#00D9FF;box-shadow:0 0 10px #00D9FF}
+.card-title h2{font-size:15px;font-weight:700;letter-spacing:.4px}
+.field{margin-bottom:16px}
+.field label{display:block;font-size:11px;color:#8A8DA8;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px;font-weight:600}
+textarea{width:100%;background:#1E1F2E;border:1px solid #34354A;border-radius:12px;padding:12px 14px;color:#E4E6F1;font-family:'Inter';font-size:13px;line-height:1.6;resize:vertical;outline:none;min-height:220px}
+textarea:focus{border-color:#00D9FF;box-shadow:0 0 0 3px rgba(0,217,255,.1)}
+.toggle-row{display:flex;align-items:center;justify-content:space-between;background:#1E1F2E;border:1px solid #34354A;border-radius:12px;padding:14px 16px;margin-top:14px}
+.toggle-label{font-size:14px;font-weight:500}
+.toggle-sub{font-size:12px;color:#8A8DA8;margin-top:3px}
+.toggle-btn{padding:7px 16px;border-radius:8px;font-family:'Inter';font-size:12px;font-weight:600;cursor:pointer;border:1px solid rgba(0,217,255,.4);background:rgba(0,217,255,.1);color:#00D9FF;transition:all .2s}
+.toggle-btn:hover{background:rgba(0,217,255,.2)}
+.toggle-btn.active{background:#00D9FF;color:#0B0C16;border-color:#00D9FF;box-shadow:0 0 12px rgba(0,217,255,.4)}
+.actions{display:flex;gap:10px;margin-top:16px}
+.btn{flex:1;padding:12px;border-radius:12px;font-family:'Inter';font-size:13px;font-weight:600;cursor:pointer;border:1px solid #34354A;background:#1E1F2E;color:#E4E6F1;transition:all .2s}
+.btn:hover{border-color:#555}
+.btn.primary{background:#00D9FF;color:#0B0C16;border-color:#00D9FF;box-shadow:0 0 18px rgba(0,217,255,.4)}
+.btn.primary:hover{background:#33E1FF;box-shadow:0 0 24px rgba(0,217,255,.55)}
+.chat-body{display:flex;flex-direction:column;gap:12px;max-height:360px;overflow-y:auto;padding-right:4px;margin-bottom:16px}
+.chat-body::-webkit-scrollbar{width:4px}
+.chat-body::-webkit-scrollbar-track{background:#1E1F2E}
+.chat-body::-webkit-scrollbar-thumb{background:#34354A;border-radius:999px}
+.chat-empty{text-align:center;color:#8A8DA8;font-size:13px;padding:40px 0}
+.msg{display:flex;gap:12px;align-items:flex-start}
+.msg.bot{flex-direction:row-reverse}
+.avatar{width:36px;height:36px;border-radius:50%;flex-shrink:0;display:grid;place-items:center;font-family:'Space Grotesk';font-weight:700;font-size:13px}
+.av-user{background:linear-gradient(135deg,#6B5BFF,#3B2EAA);color:#fff}
+.av-bot{background:linear-gradient(135deg,#00D9FF,#006D85);color:#0B0C16;box-shadow:0 0 10px rgba(0,217,255,.35)}
+.bubble{max-width:78%;padding:11px 14px;border-radius:14px;font-size:14px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word}
+.bubble.user{background:#1E1F2E;border:1px solid #34354A;border-top-left-radius:4px}
+.bubble.bot{background:rgba(0,217,255,.07);border:1px solid rgba(0,217,255,.22);border-top-right-radius:4px}
+.chat-input-row{display:flex;gap:10px}
+.chat-input-row input{flex:1;background:#1E1F2E;border:1px solid #34354A;border-radius:12px;padding:12px 14px;color:#E4E6F1;font-family:'Inter';font-size:14px;outline:none;transition:border-color .2s}
+.chat-input-row input:focus{border-color:#00D9FF}
+.chat-input-row button{padding:0 20px;border-radius:12px;background:#00D9FF;color:#0B0C16;border:none;font-weight:700;font-size:14px;cursor:pointer;box-shadow:0 0 14px rgba(0,217,255,.4);transition:all .2s;white-space:nowrap}
+.chat-input-row button:hover{background:#33E1FF;box-shadow:0 0 20px rgba(0,217,255,.6)}
+.clear-row{display:flex;justify-content:flex-end;margin-top:10px}
+.btn-clear{background:rgba(231,76,60,.1);color:#e74c3c;border:1px solid rgba(231,76,60,.3);padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter';transition:all .2s}
+.btn-clear:hover{background:#e74c3c;color:#fff}
+footer{background:#161724;border-top:1px solid #2A2B3D;text-align:center;padding:22px 24px;margin-top:28px}
+footer .fname{font-family:'Space Grotesk';font-weight:700;font-size:15px;color:#E4E6F1;margin-bottom:8px}
+footer .contacts{display:flex;gap:24px;justify-content:center;flex-wrap:wrap;font-size:13px;color:#8A8DA8}
+footer a{color:#8A8DA8;text-decoration:none;transition:color .2s}
+footer a:hover{color:#00D9FF}
+@media(max-width:760px){.grid{grid-template-columns:1fr}.stats{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
-<header>
-  <div>
-    <h1>🤖 Панель управления ботом</h1>
-    <p>Авито Бот · Gemini AI · Управление ответами</p>
-  </div>
-  <nav>
-    <a href="/">🏠 Главная</a>
-    <a href="/replies">💬 Ответы</a>
-    <a href="/messages">📬 Сообщения</a>
-  </nav>
-</header>
-<main>
+<div class="wrap">
 
-<div class="card">
-  <h2>⚙️ Системный промпт</h2>
-  <form method="post" action="/admin/prompt">
-    <label>Характер и цели бота — сохраняется в Supabase навсегда</label>
-    <textarea name="prompt" rows="14">__PROMPT__</textarea>
-    <div class="row"><button type="submit" class="btn btn-primary">💾 Сохранить промпт</button></div>
-  </form>
+<div class="topbar">
+  <div class="brand">
+    <div class="logo">A</div>
+    <div>Avito<span class="accent">Bot</span> <span style="color:#8A8DA8;font-weight:500;font-size:14px;font-family:'Inter'">&nbsp;/ prompt console</span></div>
+  </div>
+  <div class="online"><span class="dot-live"></span>online &middot; auto-reply: __STATUS__</div>
 </div>
 
-<div class="card">
-  <h2>🔘 Авто-ответы в Авито</h2>
-  <p>Статус: <span class="badge __AUTO_CLS__">__AUTO__</span></p>
-  <div class="row">
-    <form method="post" action="/admin/toggle">
-      <button type="submit" class="btn btn-toggle">Переключить</button>
+<div class="stats">
+  <div class="stat-card">
+    <div><div class="stat-label">Чатов загружено</div><div class="stat-val cyan">__STAT_CHATS__</div></div>
+    <div class="pill">live</div>
+  </div>
+  <div class="stat-card">
+    <div><div class="stat-label">Ответов сгенерировано</div><div class="stat-val">__STAT_REPLIES__</div></div>
+    <div class="pill">gemini</div>
+  </div>
+  <div class="stat-card">
+    <div><div class="stat-label">Режим бота</div><div class="stat-val cyan">__STAT_MODE__</div></div>
+    <div class="pill __PILL_CLS__">__STAT_PILL__</div>
+  </div>
+</div>
+
+<div class="grid">
+
+  <div class="card">
+    <div class="card-title"><span class="card-dot"></span><h2>BOT CONFIG</h2></div>
+    <form method="post" action="/admin/prompt">
+      <div class="field">
+        <label>Системный промпт — сохраняется в Supabase</label>
+        <textarea name="prompt">__PROMPT__</textarea>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn" onclick="location.href='/admin'">Сбросить</button>
+        <button type="submit" class="btn primary">💾 Сохранить и задеплоить</button>
+      </div>
     </form>
-  </div>
-</div>
-
-<div class="card">
-  <h2>🧪 Тестовый чат с ботом</h2>
-  <p style="color:#888;font-size:13px;margin-bottom:4px">Пиши от лица клиента — бот отвечает с учётом всей истории диалога</p>
-  <div class="chat-box" id="chatbox">__CHAT_MESSAGES__</div>
-  <form method="post" action="/admin/test">
-    <div class="input-row">
-      <input type="text" name="message" placeholder="Сообщение клиента..." autofocus>
-      <button type="submit" class="btn btn-send">➤ Отправить</button>
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Авто-ответы в Авито</div>
+        <div class="toggle-sub">__AUTO_SUB__</div>
+      </div>
+      <form method="post" action="/admin/toggle">
+        <button type="submit" class="toggle-btn __TOGGLE_CLS__">__TOGGLE_LBL__</button>
+      </form>
     </div>
-  </form>
-  __CLEAR_BTN__
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="card-dot"></span><h2>LIVE PREVIEW</h2></div>
+    <div class="chat-body" id="chatbox">__CHAT_MESSAGES__</div>
+    <form method="post" action="/admin/test">
+      <div class="chat-input-row">
+        <input type="text" name="message" placeholder="Тестовое сообщение от покупателя…" autofocus>
+        <button type="submit">Send</button>
+      </div>
+    </form>
+    __CLEAR_BTN__
+  </div>
+
+</div>
 </div>
 
-</main>
 <footer>
   <div class="fname">Аркадий | Нейросети | Чат-боты</div>
   <div class="contacts">
@@ -562,10 +603,7 @@ footer a:hover{color:white}
     <span>✉️ <a href="mailto:arkadiynovichkov@mail.ru">arkadiynovichkov@mail.ru</a></span>
   </div>
 </footer>
-<script>
-  var cb = document.getElementById('chatbox');
-  if(cb) cb.scrollTop = cb.scrollHeight;
-</script>
+<script>var cb=document.getElementById('chatbox');if(cb)cb.scrollTop=cb.scrollHeight;</script>
 </body></html>
 """
 
@@ -575,14 +613,15 @@ test_chat_history: list[dict] = []
 
 def _render_chat_messages() -> str:
     if not test_chat_history:
-        return "<div class='chat-empty'>Начни диалог — напиши сообщение ниже</div>"
-    html = ""
+        return "<div class='chat-empty'>Начни диалог — напиши сообщение от клиента ниже</div>"
+    out = ""
     for msg in test_chat_history:
+        text = html_module.escape(msg["text"])
         if msg["role"] == "user":
-            html += f"<div class='msg msg-user'><div class='avatar'>👤</div><div class='bubble'>{msg['text']}</div></div>"
+            out += f"<div class='msg'><div class='avatar av-user'>КЛ</div><div class='bubble user'>{text}</div></div>"
         else:
-            html += f"<div class='msg msg-bot'><div class='avatar'>🤖</div><div class='bubble'>{msg['text']}</div></div>"
-    return html
+            out += f"<div class='msg bot'><div class='avatar av-bot'>АЛ</div><div class='bubble bot'>{text}</div></div>"
+    return out
 
 
 def _test_history_to_avito_format() -> list[dict]:
@@ -596,12 +635,19 @@ def render_admin() -> str:
     auto_on = is_auto_reply_enabled()
     clear_btn = ""
     if test_chat_history:
-        clear_btn = "<div class='chat-footer'><form method='post' action='/admin/test/clear'><button type='submit' class='btn-clear'>🗑 Очистить чат</button></form></div>"
+        clear_btn = "<div class='clear-row'><form method='post' action='/admin/test/clear'><button type='submit' class='btn-clear'>🗑 Очистить чат</button></form></div>"
     return (
         ADMIN_PAGE
-        .replace("__PROMPT__", get_prompt())
-        .replace("__AUTO_CLS__", "badge-on" if auto_on else "badge-off")
-        .replace("__AUTO__", "ВКЛ — бот отвечает в Авито" if auto_on else "ВЫКЛ — только просмотр")
+        .replace("__PROMPT__", html_module.escape(get_prompt()))
+        .replace("__STATUS__", "ON" if auto_on else "OFF")
+        .replace("__STAT_CHATS__", str(len(messages_cache)))
+        .replace("__STAT_REPLIES__", str(len(generated_replies)))
+        .replace("__STAT_MODE__", "Авто" if auto_on else "Просмотр")
+        .replace("__PILL_CLS__", "" if auto_on else "off")
+        .replace("__STAT_PILL__", "отправляет" if auto_on else "только просмотр")
+        .replace("__AUTO_SUB__", "Бот сам пишет в Авито" if auto_on else "Ответы только в панели")
+        .replace("__TOGGLE_CLS__", "active" if auto_on else "")
+        .replace("__TOGGLE_LBL__", "ВКЛ" if auto_on else "ВЫКЛ")
         .replace("__CHAT_MESSAGES__", _render_chat_messages())
         .replace("__CLEAR_BTN__", clear_btn)
     )
