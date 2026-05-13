@@ -409,6 +409,16 @@ async def poll_avito():
     token_storage["user_id"] = user_id
     logger.info("Авторизован, user_id=%s", user_id)
 
+    # На старте помечаем все существующие сообщения как обработанные
+    # чтобы не сжечь квоту Gemini при перезапуске бота
+    init_chats = await fetch_chats(token, user_id)
+    for chat in init_chats:
+        cid = chat.get("id")
+        mid = chat.get("last_message", {}).get("id")
+        if cid and mid:
+            replied_messages[cid] = mid
+    logger.info("Инициализировано %d чатов — Gemini вызывается только для новых сообщений", len(init_chats))
+
     while True:
         try:
             if not token_storage.get("access_token"):
