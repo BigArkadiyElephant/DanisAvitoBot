@@ -92,12 +92,15 @@ def _load_prompt() -> str:
         return from_db
     try:
         with open(PROMPT_FILE, "r", encoding="utf-8") as f:
-            return json.load(f).get("prompt", os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT))
+            fallback = json.load(f).get("prompt", os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT))
     except FileNotFoundError:
-        return os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT)
+        fallback = os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT)
     except Exception:
         logger.exception("Ошибка чтения файла промпта")
-        return os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT)
+        fallback = os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT)
+    # Supabase был пуст — сразу фиксируем туда, чтобы следующий старт загрузил оттуда
+    _save_prompt_to_supabase(fallback)
+    return fallback
 
 
 def _save_prompt(prompt: str) -> None:
@@ -452,68 +455,155 @@ async def list_models():
     return {"current_model": GEMINI_MODEL, "available_models": models}
 
 
-ADMIN_PAGE = """
-<!doctype html>
-<html><head><meta charset="utf-8"><title>Admin</title>
+ADMIN_PAGE = """<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Панель управления ботом</title>
 <style>
-body{font-family:system-ui,Arial;max-width:900px;margin:20px auto;padding:0 16px}
-h2{margin-top:24px}
-textarea{width:100%;box-sizing:border-box;font-family:monospace;font-size:14px;padding:8px}
-input[type=text]{width:100%;box-sizing:border-box;padding:8px;font-size:14px}
-button{padding:10px 18px;font-size:14px;cursor:pointer;background:#2563eb;color:white;border:0;border-radius:6px}
-button:hover{background:#1d4ed8}
-.row{margin:12px 0}
-.box{background:#f5f5f5;padding:12px;border-radius:8px;margin:8px 0;white-space:pre-wrap}
-.reply{background:#e6ffe6}
-nav a{margin-right:12px}
-label{display:block;margin-bottom:6px;font-weight:600}
-</style></head>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,Arial,sans-serif;background:#f0f2f5;min-height:100vh;display:flex;flex-direction:column}
+header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);color:white;padding:20px 32px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+header h1{font-size:20px;font-weight:700;letter-spacing:.3px}
+header p{font-size:13px;opacity:.65;margin-top:3px}
+nav a{color:rgba(255,255,255,.8);text-decoration:none;margin-left:16px;font-size:14px}
+nav a:hover{color:white}
+main{max-width:860px;width:100%;margin:28px auto;padding:0 20px;flex:1}
+.card{background:white;border-radius:16px;padding:26px;margin-bottom:22px;box-shadow:0 2px 12px rgba(0,0,0,.07)}
+.card h2{font-size:17px;color:#1a1a2e;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+label{display:block;font-size:13px;color:#666;margin-bottom:8px;font-weight:500}
+textarea{width:100%;font-family:'Courier New',monospace;font-size:13px;padding:14px;border:1.5px solid #e0e0e0;border-radius:10px;resize:vertical;line-height:1.6;color:#333;transition:border-color .2s}
+textarea:focus{outline:none;border-color:#0f3460}
+input[type=text]{width:100%;padding:11px 16px;font-size:14px;border:1.5px solid #e0e0e0;border-radius:10px;color:#333;transition:border-color .2s}
+input[type=text]:focus{outline:none;border-color:#0f3460}
+.btn{padding:11px 22px;font-size:14px;font-weight:600;cursor:pointer;border:0;border-radius:10px;transition:all .2s}
+.btn-primary{background:#0f3460;color:white}
+.btn-primary:hover{background:#16213e;transform:translateY(-1px)}
+.btn-toggle{background:#e8f4fd;color:#0f3460;border:1.5px solid #0f3460}
+.btn-toggle:hover{background:#0f3460;color:white}
+.btn-send{background:#0f3460;color:white;white-space:nowrap}
+.btn-send:hover{background:#16213e}
+.btn-clear{background:#fff0f0;color:#c0392b;border:1.5px solid #e74c3c;font-size:13px;padding:8px 16px;cursor:pointer;border-radius:8px;font-weight:500;transition:all .2s}
+.btn-clear:hover{background:#e74c3c;color:white}
+.row{margin-top:14px}
+.badge{display:inline-block;padding:4px 14px;border-radius:20px;font-size:13px;font-weight:600}
+.badge-on{background:#e6f9f0;color:#27ae60}
+.badge-off{background:#fef9e7;color:#e67e22}
+.chat-box{margin:14px 0;max-height:380px;overflow-y:auto;background:#f8f9fb;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.chat-empty{color:#aaa;font-size:14px;text-align:center;padding:20px}
+.msg{display:flex;gap:10px;align-items:flex-start}
+.msg-user{flex-direction:row-reverse}
+.bubble{padding:10px 14px;border-radius:14px;max-width:78%;font-size:14px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word}
+.msg-user .bubble{background:#0f3460;color:white;border-radius:14px 4px 14px 14px}
+.msg-bot .bubble{background:white;border:1px solid #e0e0e0;color:#333;border-radius:4px 14px 14px 14px}
+.avatar{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;background:#e8edf5}
+.input-row{display:flex;gap:10px;margin-top:12px}
+.input-row input{flex:1}
+.chat-footer{display:flex;justify-content:flex-end;margin-top:8px}
+footer{background:#1a1a2e;color:rgba(255,255,255,.75);text-align:center;padding:20px 32px;margin-top:auto}
+footer .fname{font-weight:700;font-size:16px;color:white;margin-bottom:8px}
+footer .contacts{font-size:14px;display:flex;gap:24px;justify-content:center;flex-wrap:wrap}
+footer a{color:rgba(255,255,255,.7);text-decoration:none}
+footer a:hover{color:white}
+</style>
+</head>
 <body>
-<nav><a href="/">🏠 Главная</a> <a href="/replies">🤖 Ответы</a> <a href="/messages">📬 Сообщения</a></nav>
+<header>
+  <div>
+    <h1>🤖 Панель управления ботом</h1>
+    <p>Авито Бот · Gemini AI · Управление ответами</p>
+  </div>
+  <nav>
+    <a href="/">🏠 Главная</a>
+    <a href="/replies">💬 Ответы</a>
+    <a href="/messages">📬 Сообщения</a>
+  </nav>
+</header>
+<main>
 
-<h2>⚙️ Системный промпт</h2>
-<form method="post" action="/admin/prompt">
-<div class="row"><label>Промпт (как бот должен себя вести)</label>
-<textarea name="prompt" rows="14">__PROMPT__</textarea></div>
-<button type="submit">💾 Сохранить</button>
-</form>
+<div class="card">
+  <h2>⚙️ Системный промпт</h2>
+  <form method="post" action="/admin/prompt">
+    <label>Характер и цели бота — сохраняется в Supabase навсегда</label>
+    <textarea name="prompt" rows="14">__PROMPT__</textarea>
+    <div class="row"><button type="submit" class="btn btn-primary">💾 Сохранить промпт</button></div>
+  </form>
+</div>
 
-<h2>🔘 Авто-ответы в Авито</h2>
-<form method="post" action="/admin/toggle">
-<p>Сейчас: <b>__AUTO__</b></p>
-<button type="submit">Переключить</button>
-</form>
+<div class="card">
+  <h2>🔘 Авто-ответы в Авито</h2>
+  <p>Статус: <span class="badge __AUTO_CLS__">__AUTO__</span></p>
+  <div class="row">
+    <form method="post" action="/admin/toggle">
+      <button type="submit" class="btn btn-toggle">Переключить</button>
+    </form>
+  </div>
+</div>
 
-<h2>🧪 Тестовый чат</h2>
-<p>Напиши сообщение от лица клиента — бот сгенерирует ответ как в Авито.</p>
-<form method="post" action="/admin/test">
-<div class="row"><label>Сообщение клиента</label>
-<input type="text" name="message" value="__TEST_MSG__" placeholder="Здравствуйте, сколько стоит чат-бот?"></div>
-<button type="submit">🚀 Сгенерировать ответ</button>
-</form>
-__TEST_RESULT__
+<div class="card">
+  <h2>🧪 Тестовый чат с ботом</h2>
+  <p style="color:#888;font-size:13px;margin-bottom:4px">Пиши от лица клиента — бот отвечает с учётом всей истории диалога</p>
+  <div class="chat-box" id="chatbox">__CHAT_MESSAGES__</div>
+  <form method="post" action="/admin/test">
+    <div class="input-row">
+      <input type="text" name="message" placeholder="Сообщение клиента..." autofocus>
+      <button type="submit" class="btn btn-send">➤ Отправить</button>
+    </div>
+  </form>
+  __CLEAR_BTN__
+</div>
 
+</main>
+<footer>
+  <div class="fname">Аркадий | Нейросети | Чат-боты</div>
+  <div class="contacts">
+    <span>📞 <a href="tel:89990027781">8 999 002 77 81</a></span>
+    <span>✉️ <a href="mailto:arkadiynovichkov@mail.ru">arkadiynovichkov@mail.ru</a></span>
+  </div>
+</footer>
+<script>
+  var cb = document.getElementById('chatbox');
+  if(cb) cb.scrollTop = cb.scrollHeight;
+</script>
 </body></html>
 """
 
-# Память тестового чата для удобства
-last_test = {"message": "", "reply": ""}
+# История тестового чата: [{"role": "user"/"bot", "text": "..."}]
+test_chat_history: list[dict] = []
+
+
+def _render_chat_messages() -> str:
+    if not test_chat_history:
+        return "<div class='chat-empty'>Начни диалог — напиши сообщение ниже</div>"
+    html = ""
+    for msg in test_chat_history:
+        if msg["role"] == "user":
+            html += f"<div class='msg msg-user'><div class='avatar'>👤</div><div class='bubble'>{msg['text']}</div></div>"
+        else:
+            html += f"<div class='msg msg-bot'><div class='avatar'>🤖</div><div class='bubble'>{msg['text']}</div></div>"
+    return html
+
+
+def _test_history_to_avito_format() -> list[dict]:
+    return [
+        {"author_id": "self" if m["role"] == "bot" else "test_user", "content": {"text": m["text"]}}
+        for m in test_chat_history
+    ]
 
 
 def render_admin() -> str:
-    test_html = ""
-    if last_test["reply"]:
-        test_html = (
-            f"<h3>Результат теста</h3>"
-            f"<div class='box'>👤 {last_test['message']}</div>"
-            f"<div class='box reply'>🤖 {last_test['reply']}</div>"
-        )
+    auto_on = is_auto_reply_enabled()
+    clear_btn = ""
+    if test_chat_history:
+        clear_btn = "<div class='chat-footer'><form method='post' action='/admin/test/clear'><button type='submit' class='btn-clear'>🗑 Очистить чат</button></form></div>"
     return (
         ADMIN_PAGE
         .replace("__PROMPT__", get_prompt())
-        .replace("__AUTO__", "ВКЛ" if is_auto_reply_enabled() else "ВЫКЛ")
-        .replace("__TEST_MSG__", last_test["message"])
-        .replace("__TEST_RESULT__", test_html)
+        .replace("__AUTO_CLS__", "badge-on" if auto_on else "badge-off")
+        .replace("__AUTO__", "ВКЛ — бот отвечает в Авито" if auto_on else "ВЫКЛ — только просмотр")
+        .replace("__CHAT_MESSAGES__", _render_chat_messages())
+        .replace("__CLEAR_BTN__", clear_btn)
     )
 
 
@@ -539,10 +629,16 @@ async def admin_toggle():
 
 @app.post("/admin/test")
 async def admin_test(message: str = Form(...)):
-    fake_history = [{"author_id": "test_user", "content": {"text": message}}]
-    reply = await generate_reply(fake_history, "self", item_title="Услуги разработки")
-    last_test["message"] = message
-    last_test["reply"] = reply or "(не удалось сгенерировать)"
+    test_chat_history.append({"role": "user", "text": message.strip()})
+    history = _test_history_to_avito_format()
+    reply = await generate_reply(history, "self", item_title="Услуги разработки")
+    test_chat_history.append({"role": "bot", "text": reply or "(не удалось сгенерировать)"})
+    return RedirectResponse("/admin", status_code=303)
+
+
+@app.post("/admin/test/clear")
+async def admin_test_clear():
+    test_chat_history.clear()
     return RedirectResponse("/admin", status_code=303)
 
 
